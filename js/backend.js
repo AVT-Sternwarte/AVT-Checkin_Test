@@ -1,5 +1,5 @@
 "use strict";
-/* AVT Check-in 1.0.0-test.8 — REINE Browser-Demo.
+/* AVT Check-in 1.0.0-test.9 — REINE Browser-Demo.
    Keine HTTP-Anfragen, keine Verbindung zu Google Apps Script, keine Live-Daten.
    Alle Daten befinden sich ausschließlich in localStorage dieses Browsers. */
 window.AVT_BACKEND = (() => {

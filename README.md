@@ -1,4 +1,4 @@
-# AVT Check-in 1.0.0-test.8 – reine GitHub-Demo
+# AVT Check-in 1.0.0-test.9 – reine GitHub-Demo
 
 **Nur den INHALT dieses Verzeichnisses `03_Checkin_Frontend_GitHub` in das Demo-GitHub-Repository/den Demo-Pfad kopieren.** Das produktive Frontend und das produktive Google Apps Script bleiben unverändert.
 
@@ -24,3 +24,8 @@
 4. **Ordner 02 / Apps Script brauchst du für diese Version nicht.**
 
 Die lokale Simulation ist **nicht** für produktiven Einlass oder echte Abrechnung geeignet.
+
+## Neu in test.9
+- **Lupe → Eingecheckt / Alle:** Zusätzlich zu Voranmeldungen erscheinen unangemeldete Check-ins als „Unangemeldet“, mit Anzahl, Erfassungszeit und interner Kennung. Tippen öffnet die Korrektur.
+- **Übersicht:** Unangemeldete Check-ins sind auch hier auswählbar.
+- Der Browser-Speicher aus test.8 bleibt absichtlich erhalten (unveränderte `avt-checkin-demo-test8-*`-Schlüssel). Die PWA-Kennung bleibt ebenfalls unverändert.

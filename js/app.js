@@ -1614,7 +1614,7 @@
     });
 
     const query = $("searchInput").value.trim().toLowerCase();
-    const list = activeEventRegistrations().filter(registration => {
+    const registrations = activeEventRegistrations().filter(registration => {
       const checked = isRegistrationChecked(registration);
       if (searchFilter === "open" && checked) return false;
       if (searchFilter === "checked" && !checked) return false;
@@ -1626,18 +1626,52 @@
       return true;
     });
 
-    $("searchResults").innerHTML = list.length
-      ? list.map(searchResultHtml).join("")
+    // Unangemeldete Check-ins haben keine Voranmeldung und stehen daher
+    // ausschließlich in data.manual. Sie gehören dennoch zu "Eingecheckt"/"Alle".
+    const manualEntries = searchFilter === "open" ? [] : (data.manual || [])
+      .map((checkin, index) => ({ checkin, index }))
+      .filter(({ checkin }) => {
+        if (checkin.voided) return false;
+        const searchable = [
+          "unangemeldet", "unangemeldeter check-in", "manuell",
+          checkin.id, checkin.number, checkin.token, checkin.operationId
+        ].filter(Boolean).join(" ").toLowerCase();
+        return !query || searchable.includes(query);
+      })
+      .reverse(); // Zuletzt erfasste unangemeldete Besucher zuerst.
+
+    const resultHtml = [
+      ...registrations.map(searchResultHtml),
+      ...manualEntries.map(({ checkin, index }) => manualSearchResultHtml(checkin, index))
+    ];
+    $("searchResults").innerHTML = resultHtml.length
+      ? resultHtml.join("")
       : `<p class="muted">Für diesen Filter wurde keine Anmeldung gefunden.</p>`;
 
     $("searchResults").querySelectorAll("[data-token]").forEach(button => {
       button.onclick = () => {
         const registration = activeEventRegistrations().find(item => item.token === button.dataset.token);
+        if (!registration) return;
         const checked = registrationCheckin(registration);
         if (checked) openCheckinEdit(checked, "search");
         else processToken(button.dataset.token);
       };
     });
+    $("searchResults").querySelectorAll("[data-manual-index]").forEach(button => {
+      button.onclick = () => {
+        const checkin = data.manual[Number(button.dataset.manualIndex)];
+        if (checkin && !checkin.voided) openCheckinEdit(checkin, "search");
+      };
+    });
+  }
+
+  function manualSearchResultHtml(checkin, index) {
+    const persons = U.sumCounts(checkin.counts);
+    const reference = checkin.number || checkin.id || checkin.token || `M-${index + 1}`;
+    return `<button type="button" class="registration-entry" data-manual-index="${index}">
+      <span class="registration-entry-main"><strong>Unangemeldet</strong><small>${persons} ${persons === 1 ? "Person" : "Personen"} · ${U.esc(formatEditDate(checkin.time))} · ${U.esc(reference)}</small></span>
+      <span class="registration-state checked">Eingecheckt · ${persons}</span>
+    </button>`;
   }
 
   function searchResultHtml(registration) {
@@ -2890,8 +2924,8 @@
     const currentStats = stats();
     $("presentTop").textContent = currentStats.present;
     const checkins = [
-      ...Object.values(data.checkins),
-      ...data.manual.map(item => ({ ...item, number: item.id, kind: "manual" }))
+      ...Object.values(data.checkins).map(item => ({ item, manual: false })),
+      ...(data.manual || []).filter(item => !item.voided).map(item => ({ item, manual: true }))
     ];
 
     $("overviewContent").innerHTML = `
@@ -2907,17 +2941,18 @@
       <div class="card">
         <h3>Erfasste Check-ins</h3>
         ${checkins.length
-          ? checkins.map(item => `<button type="button" class="edit-list-item" data-overview-token="${U.esc(item.token)}"><span><strong>${U.esc(item.number)}</strong><small>${U.sumCounts(item.counts)} Personen · ${U.euro(item.paid)}</small></span><span>Bearbeiten ›</span></button>`).join("")
+          ? checkins.map(({ item, manual }) => `<button type="button" class="edit-list-item" data-overview-kind="${manual ? "manual" : "registration"}" data-overview-id="${U.esc(manual ? item.id : item.token)}"><span><strong>${manual ? "Unangemeldet" : U.esc(item.number)}</strong><small>${U.sumCounts(item.counts)} Personen · ${U.euro(item.paid)}</small></span><span>Bearbeiten ›</span></button>`).join("")
           : '<p class="muted">Noch keine Check-ins.</p>'}
       </div>`;
-    $("overviewContent").querySelectorAll("[data-overview-token]").forEach(button => {
+    $("overviewContent").querySelectorAll("[data-overview-kind]").forEach(button => {
       button.onclick = () => {
-        const item = [...Object.values(data.checkins), ...data.manual].find(i => i.token === button.dataset.overviewToken);
+        const item = button.dataset.overviewKind === "manual"
+          ? data.manual.find(i => i.id === button.dataset.overviewId)
+          : Object.values(data.checkins).find(i => i.token === button.dataset.overviewId);
         if (item) openCheckinEdit(item, "overview");
       };
     });
   }
-
 
   function showMessage(title, text, tone, withOverview = false) {
     panels.forEach(panel => $(panel).classList.add("hidden"));

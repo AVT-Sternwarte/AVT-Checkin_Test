@@ -1,4 +1,4 @@
-const CACHE = "avt-checkin-demo-test8-1.0.0-test.8";
+const CACHE = "avt-checkin-demo-test9-1.0.0-test.9";
 const LOCAL_FILES = [
   "./", "index.html", "help.html", "styles.css", "manifest.webmanifest",
   "js/config.js", "js/backend.js", "js/storage.js", "js/scanner.js",
@@ -17,7 +17,7 @@ self.addEventListener("install", event => {
 self.addEventListener("activate", event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(key => key.startsWith("avt-checkin-demo-test8-") && key !== CACHE).map(key => caches.delete(key)));
+    await Promise.all(keys.filter(key => (key.startsWith("avt-checkin-demo-test8-") || key.startsWith("avt-checkin-demo-test9-")) && key !== CACHE).map(key => caches.delete(key)));
     await self.clients.claim();
   })());
 });
