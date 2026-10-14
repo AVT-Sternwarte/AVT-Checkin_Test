@@ -1,11 +1,13 @@
-/* jsQR placeholder for offline bundle.
-   Für den praktischen Mehrgeräte-Test lädt index.html diese lokale Datei.
-   Falls keine QR-Bibliothek eingebettet wurde, lädt dieser Wrapper jsQR 1.4.0 nach.
+/* jsQR 1.4.0 loader.
+   Die Bibliothek wird beim ersten Onlineaufruf versionsfest geladen.
+   Danach kann der Browser-/Service-Worker-Cache sie für den Offlinebetrieb verwenden.
+   jsQR: Apache License 2.0.
 */
 (function(){
   if (typeof window.jsQR === "function") return;
-  var s=document.createElement("script");
-  s.src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js";
-  s.async=false;
-  document.head.appendChild(s);
+  var script = document.createElement("script");
+  script.src = "https://unpkg.com/jsqr@1.4.0/dist/jsQR.js";
+  script.async = false;
+  script.crossOrigin = "anonymous";
+  document.head.appendChild(script);
 })();

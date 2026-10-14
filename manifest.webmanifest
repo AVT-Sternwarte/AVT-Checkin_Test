@@ -1,6 +1,6 @@
 {
-  "name": "AVT Check-in Demo",
-  "short_name": "AVT Check-in",
+  "name": "AVT Check-in DEMO",
+  "short_name": "AVT Demo",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#edf1f4",
@@ -16,5 +16,7 @@
       "sizes": "512x512",
       "type": "image/png"
     }
-  ]
+  ],
+  "description": "Reine lokale GitHub-Demo; keine AVT-Livedaten und kein Apps-Script",
+  "id": "./test8-demo"
 }

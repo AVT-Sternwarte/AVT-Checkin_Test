@@ -1,30 +1,26 @@
-# AVT Check-in Multi-Device 0.3.0-test.6
+# AVT Check-in 1.0.0-test.8 – reine GitHub-Demo
 
-Diese Version ergänzt eine eindeutige Rückmeldung bei einem nahezu
-gleichzeitigen Check-in auf zwei Geräten.
+**Nur den INHALT dieses Verzeichnisses `03_Checkin_Frontend_GitHub` in das Demo-GitHub-Repository/den Demo-Pfad kopieren.** Das produktive Frontend und das produktive Google Apps Script bleiben unverändert.
 
-## Parallel-Check-in derselben Anmeldung
+## Anmeldung und Test
+- Demo-Webseite öffnen, mit Passwort **`demo`** anmelden.
+- Beispielfall **Anna Beispiel (A-01/A-02/A-03)**: 3 Personen mit regulär 12,00 € eingecheckt. Über Lupe → **Eingecheckt** → **Anna Beispiel** öffnen, auf Familie (10,00 €) umstellen, Grund angeben und bestätigen. Die Demo-Eintrittssumme sinkt von 17,00 € auf 15,00 €.
+- Über **€+ → Spenden anzeigen / korrigieren** sind zwei Beispielspenden (10,00 € und 5,00 €) vorhanden. Beträge korrigieren oder eine Spende stornieren (mit Begründung).
+- Auch im Bereich **Übersicht** lassen sich eingecheckte Personen öffnen; Check-in-Rücknahme möglich.
+- Über **Status: offen (abschließen)** den Status „durchgeführt“ simulieren. Danach sind Korrekturen gesperrt; mit dem Button wieder öffnen.
+- **Demo zurücksetzen** stellt die ursprünglichen erfundenen Daten wieder her.
 
-Wenn Gerät 1 eine Anmeldung erfolgreich speichert und Gerät 2 dieselbe
-Anmeldung nahezu gleichzeitig abschließen möchte:
+## Datentrennung und Sicherheit
+- **Kein Google Apps Script, keine Google-Tabellen, keine echten Voranmeldungen, kein produktives Passwort.** `js/backend.js` ist eine lokale Simulation; es gibt darin keine Netzwerkaufrufe.
+- Alle Demodaten werden ausschließlich in `localStorage` unter eigenem `avt-checkin-demo-test8-*`-Schlüssel gespeichert, daher getrennt vom bisherigen Frontend. Ein anderer Browser oder ein anderes Gerät hat eigene Demodaten.
+- Die Simulation zeigt keine echte Mehrgeräte-Synchronisierung, Serverberechtigungen, Änderungen der bestehenden Google-Tabellen und auch keinen realen automatischen Kalenderabschluss.
+- Die ursprüngliche App-Struktur und QR-Kameraansicht bleiben erhalten; der jsQR-Loader kann bei Bedarf eine externe Open-Source-QR-Bibliothek nachladen. **Es werden keine AVT-Daten an einen Server geschickt.**
+- Die Demo enthält ein eigenes *öffentliches* Testpasswort `demo`, **keine produktiven Zugangsdaten**.
 
-- verhindert das Backend weiterhin den zweiten Check-in,
-- die App lädt sofort den gemeinsamen Stand,
-- das Speicher-Overlay wird beendet,
-- Gerät 2 zeigt jetzt ausdrücklich:
+## Installation auf GitHub Pages
+1. Bestehende Demo vorher sichern, keinesfalls das Produktiv-Repository überschreiben.
+2. Die Dateien und Unterverzeichnisse aus `03_Checkin_Frontend_GitHub` exakt in den bisherigen Demo-Pfad übertragen. `index.html`, `manifest.webmanifest`, `service-worker.js`, `styles.css`, `js/` und `icons/` müssen unter derselben relativen Struktur liegen.
+3. Änderungen committen; die neue Demo-Seite über HTTPS laden (bei älteren PWA-Caches notfalls neu laden und wieder öffnen).
+4. **Ordner 02 / Apps Script brauchst du für diese Version nicht.**
 
-**Bereits eingecheckt**
-
-**Diese Anmeldung wurde inzwischen auf einem anderen Gerät eingecheckt. Es
-wurde kein zweiter Check-in gespeichert. Der gemeinsame Gesamtstand wurde
-aktualisiert.**
-
-Die App unterscheidet dafür zwischen:
-
-- der Bestätigung des eigenen Schreibvorgangs und
-- einem bereits vorhandenen Check-in mit einer anderen `operationId`.
-
-## Backend
-
-Das bereits verwendete Apps-Script-Backend `0.3.0-test.2` bleibt kompatibel.
-Eine neue Backend-Bereitstellung ist nicht erforderlich.
+Die lokale Simulation ist **nicht** für produktiven Einlass oder echte Abrechnung geeignet.

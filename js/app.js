@@ -6,7 +6,7 @@
   const SC = window.AVT_SCANNER;
   const $ = id => document.getElementById(id);
 
-  const panels = ["homePanel", "scanPanel", "searchPanel", "manualPanel", "donationPanel", "resultPanel", "overviewPanel"];
+  const panels = ["homePanel", "scanPanel", "searchPanel", "manualPanel", "donationPanel", "resultPanel", "overviewPanel", "editPanel"];
   const navigablePanels = new Set(["scan", "search", "manual", "donation", "overview"]);
   const categories = {
     adult: { label: "Erwachsene", price: C.prices.adult },
@@ -36,6 +36,54 @@
   let saveDelayResolve = null;
   let lastSuccessCheckin = null;
   let donationNotice = null;
+  let transientSyncNotice = "";
+  let backendVersion = "";
+  let activeEdit = null;
+  let donationListExpanded = false;
+
+  function updateDemoButtons() {
+    if (!C.demoMode) return;
+    const closed = AVT_BACKEND.getDemoClosed();
+    const button = $("demoStatusBtn");
+    if (button) button.textContent = closed ? "Status: durchgeführt (öffnen)" : "Status: offen (abschließen)";
+    $("mainView")?.querySelector(".demo-toolbar")?.classList.toggle("closed", closed);
+  }
+
+  function eventDateText() {
+    return C.event.dateDisplay || U.date(C.event.date);
+  }
+
+  function eventTimeText() {
+    return U.time(C.event.time);
+  }
+
+  function showVisibleClientError(message) {
+    const text = String(message || "Ein unerwarteter Fehler ist aufgetreten.");
+    const loginError = $("loginError");
+
+    if (loginError && !$("loginView")?.classList.contains("hidden")) {
+      loginError.textContent = text;
+      return;
+    }
+
+    const toastTarget = $("toast");
+    if (toastTarget) toast(text);
+  }
+
+  window.addEventListener("error", event => {
+    showVisibleClientError(
+      event?.error?.message ||
+      event?.message ||
+      "Die Anwendung konnte nicht vollständig gestartet werden."
+    );
+  });
+
+  window.addEventListener("unhandledrejection", event => {
+    showVisibleClientError(
+      event?.reason?.message ||
+      "Eine Serveranfrage konnte nicht verarbeitet werden."
+    );
+  });
 
   function init() {
     // Die Veranstaltungsdetails werden seit test.9 nur noch im Info-Dialog
@@ -43,7 +91,7 @@
     const eventTitleElement = $("eventTitle");
     const eventTimeElement = $("eventTime");
     if (eventTitleElement) eventTitleElement.textContent = C.event.title;
-    if (eventTimeElement) eventTimeElement.textContent = `${U.date(C.event.date)} · ${C.event.time} Uhr`;
+    if (eventTimeElement) eventTimeElement.textContent = `${eventDateText()} · ${eventTimeText()} Uhr`;
 
     document.querySelectorAll("[data-nav]").forEach(button => {
       button.addEventListener("click", () => nav(button.dataset.nav));
@@ -59,21 +107,32 @@
     $("passwordToggle").addEventListener("click", togglePasswordVisibility);
     $("eventInfoTopBtn").addEventListener("click", showEventDetails);
     $("refreshBtn").addEventListener("click", refreshLocalData);
-    $("logoutTopBtn").addEventListener("click", () => { S.clearLogin(); showLogin(); });
-    $("resetBtn").addEventListener("click", reset);
+    $("helpBtn").addEventListener("click", openHelp);
+    $("logoutTopBtn").addEventListener("click", logout);
     $("saveDonationBtn").addEventListener("click", saveDonation);
+    if (C.demoMode) {
+      $("demoResetBtn").addEventListener("click", async () => {
+        if (!(await confirmBox("Demo zurücksetzen", "Alle Änderungen dieser Demo im aktuellen Browser verwerfen und Beispieldaten neu laden?", "Demo zurücksetzen"))) return;
+        AVT_BACKEND.resetDemo();
+        current = null; counts = null; activeEdit = null; donationListExpanded = false;
+        await refreshSharedState({ quiet: true, reason: "demo-reset" });
+        nav("home", { forceTop: true });
+        updateDemoButtons();
+        toast("Demo wurde zurückgesetzt.");
+      });
+      $("demoStatusBtn").addEventListener("click", async () => {
+        const closed = !AVT_BACKEND.getDemoClosed();
+        if (closed && !(await confirmBox("Demo-Veranstaltung abschließen", "Für den Test auf Status „durchgeführt“ setzen? Danach können Check-ins und Spenden nicht mehr korrigiert werden. Der Status kann jederzeit zurückgestellt werden.", "Status ändern"))) return;
+        AVT_BACKEND.setDemoClosed(closed);
+        await refreshSharedState({ quiet: true, reason: "demo-status" });
+        updateDemoButtons();
+        toast(closed ? "Demo-Veranstaltung abgeschlossen: Korrekturen gesperrt." : "Demo-Veranstaltung wieder offen.");
+      });
+    }
     $("searchInput").addEventListener("input", renderSearch);
     $("cameraPlaceholder").addEventListener("click", startCamera);
     $("startCameraButton").addEventListener("click", startCamera);
     $("stopCameraButton").addEventListener("click", () => SC.stop());
-    $("imageInput").addEventListener("change", async event => {
-      try {
-        const result = await SC.decodeImageFile(event.target.files?.[0]);
-        handlePayload(result);
-      } catch (error) {
-        toast(error.message || "QR-Code nicht erkannt.");
-      }
-    });
     $("modalCancel").addEventListener("click", () => closeModal(false));
     $("modalConfirm").addEventListener("click", () => closeModal(true));
     $("saveDelayContinue").addEventListener("click", () => closeSaveDelayChoice("continue"));
@@ -119,12 +178,36 @@
 
   function applySnapshot(snapshot) {
     if (!snapshot) return;
+
+    backendVersion = String(snapshot.version || "");
+    const versionCompatible = backendVersion === C.version;
+
     if (snapshot.event) {
       C.event.id = snapshot.event.id;
       C.event.title = snapshot.event.title;
       C.event.date = snapshot.event.date;
+      C.event.dateDisplay = snapshot.event.dateDisplay || "";
       C.event.time = snapshot.event.time;
-      C.event.maxPersons = snapshot.event.maxPersons;
+      C.event.maxPersons = Number(snapshot.event.maxPersons || C.event.maxPersons || 65);
+      C.event.backendVersion = backendVersion;
+      C.event.editingAllowed = snapshot.event.editingAllowed === true;
+      C.event.editClosureReason = String(snapshot.event.editClosureReason || "");
+
+      const explicitlyEnabled = snapshot.event.registrationEnabled === true;
+      C.event.registrationEnabled = versionCompatible && explicitlyEnabled;
+
+      if (!versionCompatible) {
+        C.event.registrationDisabledReason = backendVersion
+          ? `Frontend ${C.version} und Backend ${backendVersion} sind nicht kompatibel. Bitte das Check-in-Backend aktualisieren.`
+          : "Die Backendversion und die Freigabe der Veranstaltungsart konnten nicht geprüft werden.";
+      } else if (snapshot.event.registrationEnabled !== true) {
+        C.event.registrationDisabledReason = String(
+          snapshot.event.registrationDisabledReason ||
+          "Für die aktuelle Veranstaltungsart ist keine Voranmeldung und kein Check-in vorgesehen."
+        );
+      } else {
+        C.event.registrationDisabledReason = "";
+      }
     }
     if (snapshot.prices) Object.assign(C.prices, snapshot.prices);
     if (snapshot.familyRule) Object.assign(C.familyRule, snapshot.familyRule);
@@ -154,7 +237,7 @@
           lastSuccessCheckin = {
             ...lastSuccessCheckin,
             ...serverCheckin,
-            offline: true
+            offline: Boolean(serverCheckin.offline)
           };
         }
       }
@@ -173,7 +256,11 @@
   function queueBreakdown(operations = AVT_BACKEND.getQueue()) {
     return (operations || []).reduce((result, operation) => {
       if (operation.action === "donation") result.donations += 1;
-      else if (operation.action === "checkin" || operation.action === "manualCheckin") result.checkins += 1;
+      else if (
+        operation.action === "checkin" ||
+        operation.action === "checkinBatch" ||
+        operation.action === "manualCheckin"
+      ) result.checkins += 1;
       else result.other += 1;
       return result;
     }, { checkins: 0, donations: 0, other: 0 });
@@ -196,11 +283,11 @@
     return parts.length ? `${parts.join(" und ")} ausstehend` : "0 ausstehend";
   }
 
-  function showOnlineStatus(text = "Online · gemeinsamer Test") {
+  function showOnlineStatus(text = "Online") {
     const time = syncTimeLabel();
     setBackendStatus(
       "online",
-      `${text}${time ? ` · ${time}` : ""} · ${outstandingText()}`
+      C.demoMode ? "DEMO – nur lokal gespeichert, kein Server" : `${text}${time ? ` · ${time}` : ""} · ${outstandingText()}`
     );
   }
 
@@ -208,7 +295,60 @@
     setBackendStatus("offline", `${text} · ${outstandingText()}`);
   }
 
+  function registrationAvailabilityKnown() {
+    return C.event.registrationEnabled === true || C.event.registrationEnabled === false;
+  }
+
+  function registrationAllowed() {
+    return C.event.registrationEnabled === true;
+  }
+
+  function renderRegistrationAvailability() {
+    const known = registrationAvailabilityKnown();
+    const allowed = registrationAllowed();
+    const blockedPanel = $("registrationBlockedPanel");
+    const eventCard = $("eventSummaryCard");
+    const actionRow = $("mainActionRow");
+
+    if (allowed) {
+      blockedPanel.classList.add("hidden");
+      eventCard.classList.remove("hidden");
+      actionRow.classList.remove("hidden");
+
+      if (panels.every(panelId => $(panelId).classList.contains("hidden"))) {
+        $("homePanel").classList.remove("hidden");
+      }
+      return;
+    }
+
+    SC.stop();
+    panels.forEach(panelId => $(panelId).classList.add("hidden"));
+    eventCard.classList.add("hidden");
+    actionRow.classList.add("hidden");
+    $("operationNotice").classList.add("hidden");
+    blockedPanel.classList.remove("hidden");
+
+    $("registrationBlockedTitle").textContent = known
+      ? "Check-in derzeit nicht verfügbar"
+      : "Veranstaltung wird geprüft …";
+
+    $("registrationBlockedText").textContent = known
+      ? (
+          C.event.registrationDisabledReason ||
+          `Für die Veranstaltungsart „${C.event.title || "–"}“ ist keine Voranmeldung und kein Check-in vorgesehen.`
+        )
+      : "Die Freigabe für Voranmeldung und Check-in wird aus der bestehenden Veranstaltungskonfiguration geladen.";
+
+    $("registrationBlockedEvent").textContent = C.event.title || "–";
+    $("registrationBlockedTime").textContent =
+      `${eventDateText()} · ${eventTimeText()} Uhr`;
+  }
+
   function renderSharedState() {
+    updateDemoButtons();
+    renderRegistrationAvailability();
+    if (!registrationAllowed()) return;
+
     renderAll();
 
     if (!$("searchPanel").classList.contains("hidden")) {
@@ -229,26 +369,39 @@
     updateSuccessSyncBanner();
     updateDonationSyncBanner();
 
+    const currentExisting =
+      current?.token && !current?.parts?.length
+        ? registrationCheckin(current)
+        : null;
+
     if (
       !$("resultPanel").classList.contains("hidden") &&
-      current?.token &&
-      data.checkins[current.token] &&
+      currentExisting &&
       !$("successDetailsBtn")
     ) {
-      const existing = data.checkins[current.token];
       showMessage(
-        "Bereits eingecheckt",
-        `${current.number} wurde inzwischen auf einem anderen Gerät mit ${U.sumCounts(existing.counts)} Personen eingecheckt.`,
+        "Dieser Teil ist bereits eingecheckt",
+        `${(current.ids || [current.number]).join(", ")} wurde inzwischen auf einem anderen Gerät mit ${U.sumCounts(currentExisting.counts)} Personen eingecheckt.`,
         "warning",
         true
       );
     }
   }
 
+  function handleAuthenticationFailure(message = "Die Anmeldung ist abgelaufen. Bitte erneut anmelden.") {
+    S.clearLogin();
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = null;
+    backendReady = false;
+    onlineState = "local";
+    showLogin();
+    $("loginError").textContent = message;
+  }
+
   async function initializeBackend() {
     if (!window.AVT_BACKEND?.isConfigured()) {
       backendReady = false;
-      setBackendStatus("local", "Lokaler Modus · Backend noch nicht konfiguriert");
+      setBackendStatus("local", "Produktivbackend noch nicht konfiguriert");
       applySnapshot(window.AVT_BACKEND?.loadCached?.());
       renderSharedState();
       return;
@@ -263,8 +416,13 @@
       showOnlineStatus();
       if (AVT_BACKEND.queueCount()) await syncOfflineQueue({ quiet: true });
       renderSharedState();
+      updateDemoButtons();
       restartPolling();
     } catch (error) {
+      if (AVT_BACKEND.isAuthError(error)) {
+        handleAuthenticationFailure(error.message);
+        return;
+      }
       backendReady = false;
       onlineState = "offline";
       const cached = AVT_BACKEND.loadCached();
@@ -317,8 +475,9 @@
       }
 
       try {
+        let queueSyncResult = null;
         if (AVT_BACKEND.queueCount()) {
-          await syncOfflineQueue({ quiet: true });
+          queueSyncResult = await syncOfflineQueue({ quiet: true });
         }
 
         const snapshot = await AVT_BACKEND.state();
@@ -327,10 +486,19 @@
         onlineState = "online";
         lastSyncAt = new Date();
         showOnlineStatus();
+
+        if (reason === "timer" && !(queueSyncResult && queueSyncResult.synced)) {
+          clearTransientSuccessNotices();
+        }
+
         renderSharedState();
 
-        if (!quiet) toast("Gemeinsamer Stand aktualisiert.");
+        if (!quiet) toast(C.demoMode ? "Lokaler Demo-Stand aktualisiert." : "Gemeinsamer Stand aktualisiert.");
       } catch (error) {
+        if (AVT_BACKEND.isAuthError(error)) {
+          handleAuthenticationFailure(error.message);
+          return;
+        }
         onlineState = "offline";
         showOfflineStatus();
         data = S.load();
@@ -366,7 +534,9 @@
   }
 
   async function syncOfflineQueue({ quiet = false } = {}) {
-    if (!window.AVT_BACKEND?.isConfigured() || !AVT_BACKEND.queueCount()) return;
+    if (!window.AVT_BACKEND?.isConfigured() || !AVT_BACKEND.queueCount()) {
+      return { synced: 0, failed: 0 };
+    }
 
     try {
       const result = await AVT_BACKEND.syncQueue();
@@ -375,33 +545,44 @@
       if (result.failed) {
         showOfflineStatus("Synchronisierung offen");
         if (!quiet) toast(`${outstandingText()} – Synchronisierung noch offen.`);
-        return;
+        return result;
       }
 
       lastSyncAt = new Date();
-      showOnlineStatus("Online · Offline-Vorgänge synchronisiert");
+      showOnlineStatus();
 
       const syncedOperations = result.syncedOperations || [];
-      const donationOperations = syncedOperations.filter(operation => operation.action === "donation");
+      if (syncedOperations.length) {
+        transientSyncNotice = synchronizedOperationsMessage(syncedOperations);
+        donationNotice = null;
 
-      if (donationOperations.length) {
-        donationNotice = {
-          state: "synced",
-          count: donationOperations.length,
-          operationId: donationOperations[donationOperations.length - 1].operationId
-        };
+        if (
+          lastSuccessCheckin?.operationId &&
+          syncedOperations.some(operation =>
+            operation.operationId === lastSuccessCheckin.operationId
+          )
+        ) {
+          lastSuccessCheckin.offline = false;
+        }
       }
 
       renderSharedState();
       updateSuccessSyncBanner();
       updateDonationSyncBanner();
 
-      if (result.synced) {
-        toast(synchronizedOperationsMessage(syncedOperations));
+      if (result.synced && !quiet) {
+        toast(transientSyncNotice);
       }
+
+      return result;
     } catch (error) {
+      if (AVT_BACKEND.isAuthError(error)) {
+        handleAuthenticationFailure(error.message);
+        return { synced: 0, failed: AVT_BACKEND.queueCount() };
+      }
       showOfflineStatus("Offline");
       if (!quiet) toast("Synchronisierung derzeit nicht möglich.");
+      return { synced: 0, failed: AVT_BACKEND.queueCount() };
     }
   }
 
@@ -410,7 +591,7 @@
   }
 
   function savingWarningMilliseconds() {
-    return Math.max(1, Number(C.saveFlow?.warningSeconds || 8)) * 1000;
+    return Math.max(1, Number(C.saveFlow?.warningSeconds || 10)) * 1000;
   }
 
   function verificationMilliseconds() {
@@ -426,6 +607,25 @@
   function hideSavingOverlay() {
     $("savingOverlay").classList.add("hidden");
     document.querySelector(".app-shell")?.removeAttribute("inert");
+  }
+
+  function isTerminalOperationError(error) {
+    return [
+      "CHECKIN_NOT_AVAILABLE",
+      "REGISTRATION_NOT_AVAILABLE"
+    ].includes(String(error?.code || ""));
+  }
+
+  async function handleRejectedOperation(result) {
+    const message =
+      result?.error?.message ||
+      "Für die aktuelle Veranstaltungsart ist kein Check-in vorgesehen.";
+
+    try {
+      await refreshSharedState({ quiet: true, reason: "server-sperre" });
+    } catch {}
+
+    toast(message);
   }
 
   function operationText(action) {
@@ -490,6 +690,25 @@
         : { state: "duplicate", record: existing };
     }
 
+    if (operation.action === "checkinBatch") {
+      const parts = operation.payload?.checkin?.parts || [];
+      const records = parts
+        .map(part => snapshotData.checkins?.[part.token] || null)
+        .filter(Boolean);
+
+      if (!parts.length || records.length !== parts.length) {
+        return { state: "missing", record: records };
+      }
+
+      const ownRecords = records.filter(record =>
+        record.operationId === operation.operationId
+      );
+
+      return ownRecords.length === records.length
+        ? { state: "saved", record: records }
+        : { state: "duplicate", record: records };
+    }
+
     if (operation.action === "manualCheckin") {
       const checkin = operation.payload?.checkin || {};
       const existing = (snapshotData.manual || []).find(item =>
@@ -523,15 +742,16 @@
     lastSyncAt = new Date();
     showOnlineStatus();
 
-    if (operation.action === "donation" && uiMode === "queued") {
-      donationNotice = {
-        state: "synced",
-        count: 1,
-        operationId: operation.operationId
-      };
-    }
-
     if (uiMode === "queued") {
+      transientSyncNotice = text.queuedSynced;
+      donationNotice = null;
+
+      if (
+        lastSuccessCheckin?.operationId === operation.operationId
+      ) {
+        lastSuccessCheckin.offline = false;
+      }
+
       renderSharedState();
       updateSuccessSyncBanner();
       updateDonationSyncBanner();
@@ -556,6 +776,7 @@
     let requestFailed = false;
     let requestError = null;
     let uiMode = "waiting";
+    let warningShown = false;
     let verificationRunning = false;
     let completeResolve = null;
 
@@ -568,7 +789,14 @@
       completed = true;
       acceptManagedSaveResult(result, operation, uiMode);
       closeSaveDelayChoice("saved");
-      completeResolve({ status: "saved", result, operation });
+      completeResolve({ status: "saved", result, operation, delayed: warningShown });
+    }
+
+    function markRejected(error) {
+      if (completed) return;
+      completed = true;
+      closeSaveDelayChoice("rejected");
+      completeResolve({ status: "rejected", error, operation, delayed: warningShown });
     }
 
     function markDuplicate(snapshot, existing) {
@@ -585,7 +813,8 @@
         status: "duplicate",
         operation,
         existing,
-        data: snapshot
+        data: snapshot,
+        delayed: warningShown
       });
     }
 
@@ -641,6 +870,11 @@
         requestFailed = true;
         requestError = error;
 
+        if (isTerminalOperationError(error)) {
+          markRejected(error);
+          return;
+        }
+
         // Bei einem konkurrierenden Check-in liefert das Backend bereits
         // "Diese Anmeldung wurde bereits eingecheckt". Der gemeinsame Stand
         // wird sofort geprüft, ohne den Check-in erneut zu senden.
@@ -660,10 +894,16 @@
         wait(savingWarningMilliseconds()).then(() => ({ status: "warning" }))
       ]);
 
-      if (outcome.status === "saved" || outcome.status === "duplicate") {
+      if (
+        outcome.status === "saved" ||
+        outcome.status === "duplicate" ||
+        outcome.status === "rejected"
+      ) {
         hideSavingOverlay();
         return outcome;
       }
+
+      warningShown = true;
 
       const choice = await showSaveDelayChoice(
         action,
@@ -671,7 +911,7 @@
         requestError?.message || ""
       );
 
-      if (choice === "saved" || choice === "duplicate") {
+      if (choice === "saved" || choice === "duplicate" || choice === "rejected") {
         const finishedOutcome = await completion;
         hideSavingOverlay();
         return finishedOutcome;
@@ -685,6 +925,14 @@
 
       if (choice === "offline") {
         uiMode = "queued";
+
+        if (operation.payload?.checkin) {
+          operation.payload.checkin.offline = true;
+        }
+        if (operation.payload?.donation) {
+          operation.payload.donation.offline = true;
+        }
+
         AVT_BACKEND.enqueuePrepared(operation);
         startVerificationLoop();
         hideSavingOverlay();
@@ -748,7 +996,7 @@
       return '<div id="syncStateBanner" class="offline-indicator">Offline gespeichert – noch nicht synchronisiert</div>';
     }
 
-    return '<div id="syncStateBanner" class="offline-synced-indicator">Die offline zwischengespeicherten Check-ins wurden erfolgreich synchronisiert.</div>';
+    return "";
   }
 
   function updateSuccessSyncBanner() {
@@ -769,27 +1017,39 @@
     }
   }
 
-  function donationNoticeHtml() {
-    if (!donationNotice) return "";
+  function operationNoticeHtml() {
+    if (transientSyncNotice) {
+      return `<div class="offline-synced-indicator">${U.esc(transientSyncNotice)}</div>`;
+    }
 
-    if (donationNotice.state === "pending") {
+    if (donationNotice?.state === "pending") {
       return '<div class="offline-indicator">Spende offline gespeichert – noch nicht synchronisiert</div>';
     }
 
-    const text = donationNotice.count === 1
-      ? "Die offline zwischengespeicherte Spende wurde erfolgreich synchronisiert."
-      : "Die offline zwischengespeicherten Spenden wurden erfolgreich synchronisiert.";
-
-    return `<div class="offline-synced-indicator">${text}</div>`;
+    return "";
   }
 
   function updateDonationSyncBanner() {
     const target = $("operationNotice");
     if (!target) return;
 
-    const html = donationNoticeHtml();
+    const html = operationNoticeHtml();
     target.innerHTML = html;
     target.classList.toggle("hidden", !html);
+  }
+
+  function clearTransientSuccessNotices() {
+    transientSyncNotice = "";
+
+    if (
+      lastSuccessCheckin?.operationId &&
+      !isCheckinStillQueued(lastSuccessCheckin)
+    ) {
+      lastSuccessCheckin.offline = false;
+    }
+
+    $("syncStateBanner")?.remove();
+    updateDonationSyncBanner();
   }
 
   function togglePasswordVisibility() {
@@ -841,24 +1101,86 @@
     });
   }
 
-  function login(event) {
+  async function login(event) {
     event.preventDefault();
-    if ($("password").value !== C.password) {
-      $("loginError").textContent = "Passwort ist falsch.";
+
+    const form = event.currentTarget;
+    const button =
+      $("loginSubmitBtn") ||
+      form.querySelector('button[type="submit"]') ||
+      form.querySelector("button.primary");
+    const errorTarget = $("loginError");
+
+    try {
+      if (!button) {
+        throw new Error("Der Anmeldebutton konnte nicht initialisiert werden. Bitte die Seite einmal vollständig neu laden.");
+      }
+
+      const password = String($("password")?.value || "");
+      const mode = new FormData(form).get("mode") || "day";
+
+      if (!password) {
+        throw new Error("Bitte geben Sie das Check-in-Passwort ein.");
+      }
+
+      errorTarget.textContent = "";
+      button.disabled = true;
+      button.textContent = "Anmeldung wird geprüft …";
+
+      const result = await AVT_BACKEND.login(password, mode);
+
+      if (!result?.sessionToken) {
+        throw new Error("Das Backend hat keinen gültigen Sitzungstoken zurückgegeben.");
+      }
+
+      S.setLogin({
+        mode,
+        sessionToken: result.sessionToken,
+        expiresAt: result.expiresAt
+      });
+
+      $("password").value = "";
+      $("password").type = "password";
+      $("passwordToggle").setAttribute("aria-pressed", "false");
+      $("passwordToggle").setAttribute("aria-label", "Passwort anzeigen");
+      $("passwordToggle").setAttribute("title", "Passwort anzeigen");
+      $("passwordToggle").querySelector(".password-eye-open").classList.remove("hidden");
+      $("passwordToggle").querySelector(".password-eye-closed").classList.add("hidden");
+      document.activeElement?.blur();
+
+      showMain();
+      forcePageTop();
+    } catch (error) {
+      if (errorTarget) {
+        errorTarget.textContent = error?.message || "Anmeldung fehlgeschlagen.";
+      }
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Anmelden";
+      }
+    }
+  }
+
+  async function logout() {
+    if (AVT_BACKEND.queueCount()) {
+      toast(`${outstandingText()} – bitte vor der Abmeldung synchronisieren.`);
       return;
     }
-    S.setLogin(new FormData(event.currentTarget).get("mode") || "day");
-    $("password").value = "";
-    $("password").type = "password";
-    $("passwordToggle").setAttribute("aria-pressed", "false");
-    $("passwordToggle").setAttribute("aria-label", "Passwort anzeigen");
-    $("passwordToggle").setAttribute("title", "Passwort anzeigen");
-    $("passwordToggle").querySelector(".password-eye-open").classList.remove("hidden");
-    $("passwordToggle").querySelector(".password-eye-closed").classList.add("hidden");
-    $("loginError").textContent = "";
-    document.activeElement?.blur();
-    showMain();
-    forcePageTop();
+
+    const login = S.getLogin();
+    try {
+      await AVT_BACKEND.logout(login?.sessionToken || "");
+    } catch {}
+
+    S.clearLogin();
+    data = S.reset();
+    AVT_BACKEND.clearCached();
+    current = null;
+    counts = null;
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = null;
+    showLogin();
   }
 
   function showLogin() {
@@ -872,7 +1194,8 @@
     $("loginView").classList.add("hidden");
     $("mainView").classList.remove("hidden");
     $("headActions").classList.remove("hidden");
-    nav("home", { forceTop: true });
+    C.event.registrationEnabled = null;
+    renderRegistrationAvailability();
     updateHeaderStats();
     initializeBackend();
     forcePageTop();
@@ -880,6 +1203,12 @@
 
   function nav(name, options = {}) {
     SC.stop();
+
+    if (!registrationAllowed()) {
+      renderRegistrationAvailability();
+      if (options.forceTop) forcePageTop();
+      return;
+    }
     panels.forEach(panel => $(panel).classList.add("hidden"));
     const panel = $(name + "Panel") || $("homePanel");
     panel.classList.remove("hidden");
@@ -891,6 +1220,7 @@
     if (name === "home") renderHome();
     if (name === "overview") renderOverview();
     if (name === "donation") renderDonationPanel();
+    if (name === "edit") renderEditPanel();
     if (name === "search") {
       if (!options.keepSearch) {
         $("searchInput").value = "";
@@ -922,9 +1252,53 @@
     });
   }
 
+  function openHelp() {
+    SC.stop();
+    window.location.assign("help.html");
+  }
+
   async function refreshLocalData() {
     await refreshSharedState({ quiet: false, reason: "button" });
     restartPolling();
+  }
+
+  function registrationCheckin(registration) {
+    if (!registration) return null;
+
+    const direct = data.checkins[registration.token];
+    if (direct) return direct;
+
+    const registrationIds = registration.ids || [registration.number].filter(Boolean);
+    if (!registrationIds.length) return null;
+
+    return Object.values(data.checkins).find(checkin => {
+      const checkedIds = checkin.ids || [checkin.number].filter(Boolean);
+      return registrationIds.every(id => checkedIds.includes(id));
+    }) || null;
+  }
+
+  function isRegistrationChecked(registration) {
+    return Boolean(registrationCheckin(registration));
+  }
+
+  function openRegistrations(registrations) {
+    return (registrations || []).filter(registration =>
+      !isRegistrationChecked(registration)
+    );
+  }
+
+  function combineCounts(registrations) {
+    return (registrations || []).reduce((result, registration) => {
+      Object.keys(categories).forEach(key => {
+        result[key] += Number(registration.booked?.[key] || 0);
+      });
+      return result;
+    }, { adult: 0, child: 0, youth: 0, student: 0 });
+  }
+
+  function checkedPersonsForRegistration(registration) {
+    const checkin = registrationCheckin(registration);
+    return checkin ? U.sumCounts(checkin.counts) : 0;
   }
 
   function bookedConfirmed() {
@@ -953,7 +1327,7 @@
       entry += Number(checkin.paid) || 0;
     });
 
-    const donations = data.donations.reduce((sum, donation) => sum + (Number(donation.amount) || 0), 0);
+    const donations = data.donations.reduce((sum, donation) => sum + (donation.voided ? 0 : (Number(donation.amount) || 0)), 0);
     const present = regular + wait + exceptions + manual;
     const confirmed = bookedConfirmed();
     const initially = Math.max(0, C.event.maxPersons - confirmed);
@@ -962,7 +1336,9 @@
     window.AVT_REGISTRATIONS
       .filter(registration => registration.status === "confirmed" && registration.eventId === C.event.id)
       .forEach(registration => {
-        if (!data.checkins[registration.token]) expected += U.sumCounts(registration.booked);
+        if (!isRegistrationChecked(registration)) {
+          expected += U.sumCounts(registration.booked);
+        }
       });
 
     const regularOpen = expected;
@@ -970,7 +1346,7 @@
       .filter(registration =>
         registration.eventId === C.event.id &&
         registration.status === "waitlist" &&
-        !data.checkins[registration.token]
+        !isRegistrationChecked(registration)
       )
       .reduce((sum, registration) => sum + U.sumCounts(registration.booked), 0);
 
@@ -996,8 +1372,22 @@
 
   function updateHeaderStats() {
     const currentStats = stats();
+    const maximum = Number(C.event.maxPersons || 0);
+    const card = $("eventSummaryCard");
+
     $("presentTop").textContent = currentStats.present;
+    $("maxPersonsTop").textContent = maximum;
     $("safeFreeTop").textContent = currentStats.safe;
+    $("waitlistOpenTop").textContent = currentStats.waitOpen;
+
+    card.classList.toggle(
+      "capacity-at-limit",
+      maximum > 0 && currentStats.present === maximum
+    );
+    card.classList.toggle(
+      "capacity-over-limit",
+      maximum > 0 && currentStats.present > maximum
+    );
   }
 
   function showEventDetails() {
@@ -1006,13 +1396,14 @@
     $("modalBody").innerHTML = `
       <div class="card" style="margin:0;padding:12px;">
         <p><strong>${U.esc(C.event.title)}</strong></p>
-        <p>${U.date(C.event.date)} · ${U.esc(C.event.time)} Uhr</p>
-        <p>Lokale Ein-Gerät-Testversion</p>
+        <p>${U.esc(eventDateText())} · ${U.esc(eventTimeText())} Uhr</p>
+        <p>Reine Browser-Demo (keine Synchronisierung)</p>
       </div>
       <div class="card" style="margin:12px 0 0 0;padding:12px;">
         <dl class="detail-grid">
-          <dt>Eingecheckt</dt><dd>${currentStats.present} / ${C.event.maxPersons}</dd>
+          <dt>Eingecheckt</dt><dd>${currentStats.present} / max. ${C.event.maxPersons}</dd>
           <dt>Sicher freie Plätze</dt><dd>${currentStats.safe}</dd>
+          <dt>Warteliste offen</dt><dd>${currentStats.waitOpen}</dd>
         </dl>
       </div>`;
     $("modalConfirm").textContent = "Schließen";
@@ -1033,23 +1424,17 @@
     const currentStats = stats();
     $("presentTop").textContent = currentStats.present;
     $("summary").innerHTML = [
-      summaryCard("Anwesend", currentStats.present, `von ${C.event.maxPersons}`),
-      summaryCard("Sicher frei", currentStats.safe, `${currentStats.expected} regulär erwartet`),
-      summaryCard("Eintritt", U.euro(currentStats.entry), "erfasst"),
-      summaryCard("Spenden", U.euro(currentStats.donations), "separat")
+      summaryCard("Anwesend", `${currentStats.present} von ${C.event.maxPersons}`, ""),
+      summaryCard("Sicher frei", currentStats.safe, ""),
+      summaryCard("Summe Eintritt", U.euro(currentStats.entry), ""),
+      summaryCard("Summe Spenden", U.euro(currentStats.donations), "")
     ].join("");
 
-    $("scenarios").innerHTML = window.AVT_REGISTRATIONS
-      .map(registration => `<button data-token="${registration.token}"><strong>${registration.number}</strong> · ${U.esc(registration.scenario)}</button>`)
-      .join("");
-
-    $("scenarios").querySelectorAll("[data-token]").forEach(button => {
-      button.onclick = () => processToken(button.dataset.token);
-    });
   }
 
   function summaryCard(label, value, note) {
-    return `<div class="summary-card"><small>${U.esc(label)}</small><strong>${U.esc(value)}</strong><small>${U.esc(note)}</small></div>`;
+    const noteHtml = note ? `<small>${U.esc(note)}</small>` : "";
+    return `<div class="summary-card"><small>${U.esc(label)}</small><strong>${U.esc(value)}</strong>${noteHtml}</div>`;
   }
 
   function resetCamera() {
@@ -1087,18 +1472,136 @@
     correctionReason = "";
   }
 
-  function processToken(token) {
-    const registration = window.AVT_REGISTRATIONS.find(item => item.token === token);
-    if (!registration) {
-      showMessage("Unbekannter QR-Code", "Dieser QR-Code gehört nicht zu den Testanmeldungen.", "dangerbox");
-      return;
-    }
-
+  function selectRegistration(registration) {
     current = registration;
     counts = U.clone(registration.booked);
     showAllCategories = false;
     resetPriceState();
     renderResult();
+  }
+
+  function selectAllOpenRegistrations(registrations) {
+    const openParts = openRegistrations(registrations);
+    if (!openParts.length) {
+      showMessage(
+        "Bereits vollständig eingecheckt",
+        "Alle Personen dieser Buchung wurden bereits eingecheckt.",
+        "warning",
+        true
+      );
+      return;
+    }
+
+    current = {
+      token: `${openParts[0].sourceToken || openParts[0].qrToken || openParts[0].token}~OPEN`,
+      sourceToken: openParts[0].sourceToken || openParts[0].qrToken || "",
+      qrToken: openParts[0].qrToken || openParts[0].sourceToken || "",
+      number: (openParts.flatMap(part => part.ids || [part.number]))[0] || "",
+      ids: openParts.flatMap(part => part.ids || [part.number]),
+      name: openParts[0].name,
+      status: "mixed",
+      eventId: openParts[0].eventId,
+      booked: combineCounts(openParts),
+      parts: openParts.map(part => U.clone(part)),
+      scenario: "Alle noch offenen Personen"
+    };
+
+    counts = U.clone(current.booked);
+    showAllCategories = false;
+    resetPriceState();
+    renderResult();
+  }
+
+  function showSplitRegistrationSelection(matches) {
+    panels.forEach(panel => $(panel).classList.add("hidden"));
+    $("resultPanel").classList.remove("hidden");
+
+    const openParts = openRegistrations(matches);
+    const checkedParts = matches.filter(isRegistrationChecked);
+    const allChecked = openParts.length === 0;
+    const partiallyChecked = checkedParts.length > 0 && openParts.length > 0;
+
+    if (allChecked) {
+      showMessage(
+        "Bereits vollständig eingecheckt",
+        "Alle regulären und Wartelistenpersonen dieser Buchung wurden bereits eingecheckt.",
+        "warning",
+        true
+      );
+      return;
+    }
+
+    const openPersons = openParts.reduce(
+      (sum, registration) => sum + U.sumCounts(registration.booked),
+      0
+    );
+
+    $("resultContent").innerHTML = `
+      <div class="card ${partiallyChecked ? "warning" : ""}">
+        <h2>${partiallyChecked ? "Teilweise eingecheckt" : "Geteilte Anmeldung"}</h2>
+        <p>${
+          partiallyChecked
+            ? `Für diese Buchung sind noch ${openPersons} Personen offen. Bereits eingecheckte Teile werden nicht erneut angeboten.`
+            : "Diese Buchung enthält reguläre Anmeldeplätze und Wartelistenplätze. Bitte wählen Sie den Teil aus, der jetzt eingecheckt werden soll."
+        }</p>
+      </div>
+      <div class="registration-list">
+        ${matches.map(registration => {
+          const existing = registrationCheckin(registration);
+          const state = existing
+            ? `Bereits eingecheckt · ${U.sumCounts(existing.counts)} Personen`
+            : labelStatus(registration.status);
+          return `<button
+              class="registration-entry ${existing ? "registration-entry-disabled" : ""}"
+              data-split-token="${U.esc(registration.token)}"
+              type="button"
+              ${existing ? "disabled" : ""}>
+            <span class="registration-entry-main">
+              <strong>${U.esc((registration.ids || [registration.number]).join(", "))}</strong>
+              <small>${U.sumCounts(registration.booked)} Personen</small>
+            </span>
+            <span class="registration-state ${existing ? "checked" : registration.status === "waitlist" ? "wait" : ""}">${U.esc(state)}</span>
+          </button>`;
+        }).join("")}
+      </div>
+      ${openParts.length > 1
+        ? '<button id="checkAllOpenPartsBtn" class="primary full split-all-open-button" type="button">Alle noch offenen Personen einchecken</button>'
+        : ""}`;
+
+    $("resultContent").querySelectorAll("[data-split-token]:not([disabled])").forEach(button => {
+      button.onclick = () => {
+        const selected = matches.find(item => item.token === button.dataset.splitToken);
+        if (selected) selectRegistration(selected);
+      };
+    });
+
+    if ($("checkAllOpenPartsBtn")) {
+      $("checkAllOpenPartsBtn").onclick = () =>
+        selectAllOpenRegistrations(openParts);
+    }
+  }
+
+  function processToken(token) {
+    const cleanToken = String(token || "").trim();
+    const matches = window.AVT_REGISTRATIONS.filter(item =>
+      item.token === cleanToken || item.qrToken === cleanToken
+    );
+
+    if (!matches.length) {
+      showMessage(
+        "Unbekannter QR-Code",
+        "Dieser QR-Code gehört nicht zu einer Anmeldung der aktiven Veranstaltung.",
+        "dangerbox"
+      );
+      return;
+    }
+
+    if (matches.length > 1) {
+      showSplitRegistrationSelection(matches);
+      return;
+    }
+
+    selectRegistration(matches[0]);
   }
 
   function activeEventRegistrations() {
@@ -1112,7 +1615,7 @@
 
     const query = $("searchInput").value.trim().toLowerCase();
     const list = activeEventRegistrations().filter(registration => {
-      const checked = Boolean(data.checkins[registration.token]);
+      const checked = isRegistrationChecked(registration);
       if (searchFilter === "open" && checked) return false;
       if (searchFilter === "checked" && !checked) return false;
       const searchableIds = (registration.ids || [registration.number]).join(" ").toLowerCase();
@@ -1128,12 +1631,17 @@
       : `<p class="muted">Für diesen Filter wurde keine Anmeldung gefunden.</p>`;
 
     $("searchResults").querySelectorAll("[data-token]").forEach(button => {
-      button.onclick = () => processToken(button.dataset.token);
+      button.onclick = () => {
+        const registration = activeEventRegistrations().find(item => item.token === button.dataset.token);
+        const checked = registrationCheckin(registration);
+        if (checked) openCheckinEdit(checked, "search");
+        else processToken(button.dataset.token);
+      };
     });
   }
 
   function searchResultHtml(registration) {
-    const checkin = data.checkins[registration.token];
+    const checkin = registrationCheckin(registration);
     let stateClass = "";
     let stateText = labelStatus(registration.status);
 
@@ -1163,21 +1671,39 @@
       return;
     }
 
-    const existing = data.checkins[current.token];
+    const existing =
+      current.parts?.length
+        ? null
+        : registrationCheckin(current);
     if (existing) {
-      showMessage("Bereits eingecheckt", `${current.number} wurde bereits mit ${U.sumCounts(existing.counts)} Personen eingecheckt.`, "warning", true);
+      showMessage(
+        "Dieser Teil ist bereits eingecheckt",
+        `${(current.ids || [current.number]).join(", ")} wurde bereits mit ${U.sumCounts(existing.counts)} Personen eingecheckt.`,
+        "warning",
+        true
+      );
       return;
     }
 
-    const waitBlock = current.status === "waitlist" ? earlierWaitIds() : [];
-    const tone = current.status === "cancelled" ? "dangerbox" : current.status === "waitlist" ? "warning" : "";
+    const containsWaitlist =
+      current.status === "waitlist" ||
+      Boolean(current.parts?.some(part => part.status === "waitlist"));
+    const waitBlock = containsWaitlist ? earlierWaitIds() : [];
+    const tone =
+      current.status === "cancelled"
+        ? "dangerbox"
+        : containsWaitlist
+          ? "warning"
+          : "";
     let warning = "";
 
     if (current.status === "cancelled") {
       warning = '<div class="card dangerbox"><strong>Stornierte Anmeldung</strong><p>Ein Check-in ist nur als ausdrückliche Ausnahme möglich.</p></div>';
     }
-    if (waitBlock.length) {
-      warning = `<div class="card warning"><strong>Diese Wartelistenanmeldung ist noch nicht an der Reihe.</strong><p>Vorher sind noch folgende Wartelisten-IDs offen:</p><ul class="wait-warning-list">${waitBlock.map(id => `<li>${U.esc(id)}</li>`).join("")}</ul><p>Ein Check-in ist nach zusätzlicher Bestätigung trotzdem möglich.</p></div>`;
+    if (containsWaitlist) {
+      warning = waitBlock.length
+        ? `<div class="card warning"><strong>Diese Auswahl enthält Wartelistenplätze und ist noch nicht an der Reihe.</strong><p>Vorher sind noch folgende Wartelisten-IDs offen:</p><ul class="wait-warning-list">${waitBlock.map(id => `<li>${U.esc(id)}</li>`).join("")}</ul><p>Ein Check-in ist nach zusätzlicher Bestätigung trotzdem möglich.</p></div>`
+        : '<div class="card warning"><strong>Diese Auswahl enthält Wartelistenplätze.</strong><p>Der Check-in ist nach Bestätigung möglich.</p></div>';
     }
 
     $("resultContent").innerHTML = `
@@ -1191,16 +1717,20 @@
         </div>
       </div>
       ${warning}
-      ${counterHtml(false)}
+      ${current.parts?.length
+        ? actualPersonsHtml(counts)
+        : counterHtml(false)}
       ${priceHtml(`<button id="completeBtn" class="primary checkin-side-button" type="button">${
-        current.status === "cancelled"
-          ? "Ausnahme einchecken"
-          : current.status === "waitlist"
-            ? "Warteliste einchecken"
-            : "Check-in abschließen"
+        current.parts?.length
+          ? "Alle offenen einchecken"
+          : current.status === "cancelled"
+            ? "Ausnahme einchecken"
+            : current.status === "waitlist"
+              ? "Warteliste einchecken"
+              : "Check-in abschließen"
       }</button>`)}`;
 
-    bindCounters(false);
+    if (!current.parts?.length) bindCounters(false);
     bindPrice();
     $("showIdsButton").onclick = showCurrentIds;
     $("completeBtn").onclick = completeExisting;
@@ -1222,6 +1752,7 @@
   function labelStatus(status) {
     if (status === "confirmed") return "Reguläre Anmeldung";
     if (status === "waitlist") return "Warteliste";
+    if (status === "mixed") return "Regulär + Warteliste";
     return "Storniert";
   }
 
@@ -1234,12 +1765,17 @@
     const currentIds = current?.ids || [current?.number].filter(Boolean);
     const currentMinimum = Math.min(...currentIds.map(waitIdNumber));
 
+    const currentTokens = new Set(
+      current?.parts?.map(part => part.token) ||
+      [current?.token].filter(Boolean)
+    );
+
     return window.AVT_REGISTRATIONS
       .filter(registration =>
         registration.eventId === C.event.id &&
         registration.status === "waitlist" &&
-        registration.token !== current?.token &&
-        !data.checkins[registration.token]
+        !currentTokens.has(registration.token) &&
+        !isRegistrationChecked(registration)
       )
       .flatMap(registration => registration.ids || [registration.number])
       .filter(id => waitIdNumber(id) < currentMinimum)
@@ -1459,8 +1995,71 @@
   }
 
 
+  function persistSuccessfulCheckin(checkin, manual = false) {
+    checkin.offline = Boolean(checkin.offline);
+
+    if (manual) {
+      const index = data.manual.findIndex(item =>
+        item.operationId === checkin.operationId ||
+        item.id === checkin.id
+      );
+      if (index >= 0) data.manual[index] = U.clone(checkin);
+      else data.manual.push(U.clone(checkin));
+    } else {
+      data.checkins[checkin.token] = U.clone(checkin);
+    }
+
+    S.save(data);
+  }
+
+  function persistSuccessfulDonation(donation) {
+    const index = data.donations.findIndex(item =>
+      item.operationId === donation.operationId
+    );
+    if (index >= 0) data.donations[index] = U.clone(donation);
+    else data.donations.push(U.clone(donation));
+    S.save(data);
+  }
+
+  function schedulePostSaveRefresh() {
+    window.setTimeout(() => {
+      refreshSharedState({ quiet: true, reason: "post-save" }).catch(() => {});
+    }, 50);
+  }
+
+  function capacityConfirmation(additionalPersons, baseMessage, defaultTitle) {
+    const currentStats = stats();
+    const projected = currentStats.present + Number(additionalPersons || 0);
+    const maximum = Number(C.event.maxPersons || 0);
+
+    if (!maximum || projected < maximum) {
+      return {
+        title: defaultTitle,
+        message: baseMessage,
+        tone: ""
+      };
+    }
+
+    if (projected === maximum) {
+      return {
+        title: "Maximale Kapazität wird erreicht",
+        message:
+          `Durch diesen Check-in sind anschließend ${projected} von maximal ${maximum} Personen eingecheckt.\n\n${baseMessage}`,
+        tone: "capacity-warning"
+      };
+    }
+
+    return {
+      title: "Maximale Kapazität wird überschritten",
+      message:
+        `Durch diesen Check-in wären anschließend ${projected} von maximal ${maximum} Personen eingecheckt. ` +
+        `Die Kapazität würde um ${projected - maximum} Personen überschritten.\n\n${baseMessage}`,
+      tone: "capacity-danger"
+    };
+  }
+
   async function confirmOfflineOperation(type = "checkin") {
-    if (navigator.onLine && onlineState !== "offline") return true;
+    if (C.demoMode || (navigator.onLine && onlineState !== "offline")) return true;
 
     if (type === "donation") {
       return await confirmBox(
@@ -1491,7 +2090,165 @@
     );
   }
 
+  function batchPartCheckins(batch, operationId, offline) {
+    return batch.parts.map((part, index) => ({
+      token: part.token,
+      sourceToken: part.sourceToken || part.qrToken || "",
+      number: part.number,
+      ids: part.ids || [part.number],
+      name: batch.name,
+      counts: U.clone(part.booked),
+      paid: index === 0 ? batch.paid : 0,
+      basePrice: index === 0 ? batch.basePrice : 0,
+      tariff: batch.tariff,
+      correctionReason: batch.correctionReason,
+      kind: part.status === "confirmed" ? "regular" : "waitlist",
+      offline: Boolean(offline),
+      time: batch.time,
+      operationId
+    }));
+  }
+
+  function persistSuccessfulBatch(batch, operationId, offline) {
+    batchPartCheckins(batch, operationId, offline).forEach(checkin => {
+      persistSuccessfulCheckin(checkin, false);
+    });
+  }
+
+  async function completeBatchExisting() {
+    const openParts = openRegistrations(current.parts || []);
+    if (!openParts.length) {
+      showMessage(
+        "Bereits vollständig eingecheckt",
+        "Alle Personen dieser Buchung wurden bereits eingecheckt.",
+        "warning",
+        true
+      );
+      return;
+    }
+
+    if (!validateCorrection()) return;
+
+    const openCounts = combineCounts(openParts);
+    const persons = U.sumCounts(openCounts);
+    const ids = openParts.flatMap(part => part.ids || [part.number]);
+    let message =
+      `${ids.join(", ")} mit ${persons} Personen und ${U.euro(chosenPrice())} Eintritt einchecken?`;
+
+    if (openParts.some(part => part.status === "waitlist")) {
+      const earlierIds = earlierWaitIds();
+      message = earlierIds.length
+        ? `Frühere Wartelistenanmeldungen sind noch offen. Trotzdem alle offenen Personen einchecken? ${message}`
+        : `Diese Auswahl enthält Wartelistenplätze. Alle offenen Personen einchecken? ${message}`;
+    }
+
+    const confirmation = capacityConfirmation(
+      persons,
+      message,
+      "Alle offenen Personen einchecken"
+    );
+
+    if (!(
+      await confirmBox(
+        confirmation.title,
+        confirmation.message,
+        "Alle einchecken",
+        confirmation.tone
+      )
+    )) return;
+
+    if (!(await confirmOfflineOperation("checkin"))) return;
+
+    const batch = {
+      token: current.token,
+      sourceToken: current.sourceToken || current.qrToken || "",
+      number: ids[0] || "",
+      ids,
+      name: current.name,
+      counts: U.clone(openCounts),
+      paid: chosenPrice(),
+      basePrice: basePrice(),
+      tariff: tariffMode,
+      correctionReason,
+      kind: "mixed",
+      parts: openParts.map(part => ({
+        token: part.token,
+        sourceToken: part.sourceToken || part.qrToken || "",
+        sourceRow: part.sourceRow,
+        part: part.part,
+        number: part.number,
+        ids: part.ids || [part.number],
+        name: part.name,
+        status: part.status,
+        booked: U.clone(part.booked)
+      })),
+      offline: (!C.demoMode && !navigator.onLine) || onlineState === "offline",
+      time: U.now()
+    };
+
+    if (window.AVT_BACKEND?.isConfigured()) {
+      if (batch.offline) {
+        const operation = prepareOfflineOperation("checkinBatch", batch);
+        persistSuccessfulBatch(batch, operation.operationId, true);
+      } else {
+        const result = await saveOperationWithProgress(
+          "checkinBatch",
+          { checkin: batch }
+        );
+        batch.operationId = result.operation.operationId;
+
+        if (result.status === "cancelled") return;
+
+        if (result.status === "rejected") {
+          await handleRejectedOperation(result);
+          return;
+        }
+
+        if (result.status === "duplicate") {
+          renderSharedState();
+          restartPolling();
+          showMessage(
+            "Bereits eingecheckt",
+            "Die noch offenen Personen wurden inzwischen auf einem anderen Gerät eingecheckt. Es wurde kein zweiter Check-in gespeichert.",
+            "warning",
+            true
+          );
+          return;
+        }
+
+        batch.offline = result.status === "queued";
+        persistSuccessfulBatch(batch, batch.operationId, batch.offline);
+        schedulePostSaveRefresh();
+
+        if (result.delayed && result.status === "saved") {
+          current = null;
+          counts = null;
+          nav("home", { forceTop: true });
+          toast("Alle offenen Personen wurden eingecheckt.");
+          restartPolling();
+          return;
+        }
+      }
+    } else {
+      persistSuccessfulBatch(batch, batch.operationId || "", batch.offline);
+    }
+
+    const successCheckin = {
+      ...batch,
+      operationId: batch.operationId || "",
+      offline: batch.offline
+    };
+
+    restartPolling();
+    renderSuccess(successCheckin);
+  }
+
   async function completeExisting() {
+    if (current?.parts?.length) {
+      await completeBatchExisting();
+      return;
+    }
+
     if (U.sumCounts(counts) < 1) {
       toast("Mindestens eine Person erforderlich.");
       return;
@@ -1504,7 +2261,21 @@
       message = `Frühere Wartelistenanmeldungen sind noch offen. Trotzdem fortfahren? ${message}`;
     }
 
-    if (!(await confirmBox("Check-in bestätigen", message, "Einchecken"))) return;
+    const confirmation = capacityConfirmation(
+      U.sumCounts(counts),
+      message,
+      "Check-in bestätigen"
+    );
+
+    if (!(
+      await confirmBox(
+        confirmation.title,
+        confirmation.message,
+        "Einchecken",
+        confirmation.tone
+      )
+    )) return;
+
     if (!(await confirmOfflineOperation("checkin"))) return;
 
     const checkin = {
@@ -1517,7 +2288,7 @@
       tariff: tariffMode,
       correctionReason,
       kind: current.status === "confirmed" ? "regular" : current.status === "waitlist" ? "waitlist" : "exception",
-      offline: !navigator.onLine || onlineState === "offline",
+      offline: (!C.demoMode && !navigator.onLine) || onlineState === "offline",
       time: U.now()
     };
 
@@ -1534,6 +2305,11 @@
           return;
         }
 
+        if (result.status === "rejected") {
+          await handleRejectedOperation(result);
+          return;
+        }
+
         if (result.status === "duplicate") {
           renderSharedState();
           restartPolling();
@@ -1547,15 +2323,20 @@
         }
 
         checkin.offline = result.status === "queued";
+        persistSuccessfulCheckin(checkin, false);
+        schedulePostSaveRefresh();
 
-        if (result.status === "queued") {
-          data.checkins[current.token] = checkin;
-          S.save(data);
+        if (result.delayed && result.status === "saved") {
+          current = null;
+          counts = null;
+          nav("home", { forceTop: true });
+          toast("Check-in wurde gespeichert.");
+          restartPolling();
+          return;
         }
       }
     } else {
-      data.checkins[current.token] = checkin;
-      S.save(data);
+      persistSuccessfulCheckin(checkin, false);
     }
 
     restartPolling();
@@ -1579,10 +2360,25 @@
     }
     if (!validateCorrection()) return;
 
-    if (!(await confirmBox("Unangemeldeten Check-in bestätigen", `${U.sumCounts(counts)} Personen mit ${U.euro(chosenPrice())} Eintritt erfassen?`, "Erfassen"))) return;
+    const manualMessage = `${U.sumCounts(counts)} Personen mit ${U.euro(chosenPrice())} Eintritt erfassen?`;
+    const confirmation = capacityConfirmation(
+      U.sumCounts(counts),
+      manualMessage,
+      "Unangemeldeten Check-in bestätigen"
+    );
+
+    if (!(
+      await confirmBox(
+        confirmation.title,
+        confirmation.message,
+        "Erfassen",
+        confirmation.tone
+      )
+    )) return;
+
     if (!(await confirmOfflineOperation("checkin"))) return;
 
-    const id = `M-${String(data.sequence).padStart(3, "0")}`;
+    const id = `M-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
     const checkin = {
       id,
       number: id,
@@ -1593,7 +2389,7 @@
       tariff: tariffMode,
       correctionReason,
       kind: "manual",
-      offline: !navigator.onLine || onlineState === "offline",
+      offline: (!C.demoMode && !navigator.onLine) || onlineState === "offline",
       time: U.now()
     };
 
@@ -1611,18 +2407,26 @@
           return;
         }
 
-        checkin.offline = result.status === "queued";
+        if (result.status === "rejected") {
+          await handleRejectedOperation(result);
+          return;
+        }
 
-        if (result.status === "queued") {
-          data.sequence += 1;
-          data.manual.push(checkin);
-          S.save(data);
+        checkin.offline = result.status === "queued";
+        persistSuccessfulCheckin(checkin, true);
+        schedulePostSaveRefresh();
+
+        if (result.delayed && result.status === "saved") {
+          current = null;
+          counts = null;
+          nav("home", { forceTop: true });
+          toast("Check-in wurde gespeichert.");
+          restartPolling();
+          return;
         }
       }
     } else {
-      data.sequence += 1;
-      data.manual.push(checkin);
-      S.save(data);
+      persistSuccessfulCheckin(checkin, true);
     }
 
     restartPolling();
@@ -1740,7 +2544,7 @@
         <dt>Warteliste</dt><dd>${currentStats.wait}</dd>
         <dt>Stornierte Ausnahmen</dt><dd>${currentStats.exceptions}</dd>
         <dt>Unangemeldet</dt><dd>${currentStats.manual}</dd>
-        <dt>Gesamt anwesend</dt><dd>${currentStats.present} / ${C.event.maxPersons}</dd>
+        <dt>Gesamt anwesend</dt><dd>${currentStats.present} / max. ${C.event.maxPersons}</dd>
         <dt>Sicher freie Plätze</dt><dd>${currentStats.safe}</dd>
         <dt>Eintritt</dt><dd>${U.euro(currentStats.entry)}</dd>
         <dt>Spenden</dt><dd>${U.euro(currentStats.donations)}</dd>
@@ -1753,13 +2557,34 @@
   function renderDonationPanel(preserveInput = false) {
     if (!preserveInput) $("donationAmount").value = "";
     const currentStats = stats();
+    const activeDonations = data.donations.filter(item => !item.voided);
     $("donationSummary").innerHTML = `<div class="card">
       <h3>Bisher erfasste Spenden</h3>
       <dl class="detail-grid">
-        <dt>Anzahl</dt><dd>${data.donations.length}</dd>
+        <dt>Anzahl</dt><dd>${activeDonations.length}</dd>
         <dt>Summe</dt><dd>${U.euro(currentStats.donations)}</dd>
       </dl>
+      <button id="showDonationsBtn" class="secondary full" type="button">
+        ${donationListExpanded ? "Spendenliste schließen" : "Spenden anzeigen / korrigieren"}
+      </button>
+      ${donationListExpanded ? `<div class="edit-list" id="donationEditList">
+        ${data.donations.length ? [...data.donations].reverse().map(item => `
+          <button class="edit-list-item" data-donation-id="${U.esc(item.operationId || "")}" type="button" ${item.voided ? "disabled" : ""}>
+            <span><strong>${U.euro(item.amount)}</strong><small>${U.esc(formatEditDate(item.time))}</small></span>
+            <span>${item.voided ? "Storniert" : "Bearbeiten ›"}</span>
+          </button>`).join("") : '<p class="muted">Noch keine Spenden vorhanden.</p>'}
+      </div>` : ""}
     </div>`;
+    $("showDonationsBtn").onclick = () => {
+      donationListExpanded = !donationListExpanded;
+      renderDonationPanel(true);
+    };
+    $("donationSummary").querySelectorAll("[data-donation-id]").forEach(button => {
+      button.onclick = () => {
+        const item = data.donations.find(d => d.operationId === button.dataset.donationId);
+        if (item) openDonationEdit(item);
+      };
+    });
   }
 
   async function saveDonation() {
@@ -1782,7 +2607,7 @@
     const donation = {
       amount,
       time: U.now(),
-      offline: !navigator.onLine || onlineState === "offline"
+      offline: (!C.demoMode && !navigator.onLine) || onlineState === "offline"
     };
 
     if (window.AVT_BACKEND?.isConfigured()) {
@@ -1803,6 +2628,11 @@
           return;
         }
 
+        if (result.status === "rejected") {
+          await handleRejectedOperation(result);
+          return;
+        }
+
         donation.offline = result.status === "queued";
 
         if (result.status === "queued") {
@@ -1811,15 +2641,15 @@
             count: 1,
             operationId: donation.operationId
           };
-          data.donations.push(donation);
-          S.save(data);
         } else {
           donationNotice = null;
         }
+
+        persistSuccessfulDonation(donation);
+        schedulePostSaveRefresh();
       }
     } else {
-      data.donations.push(donation);
-      S.save(data);
+      persistSuccessfulDonation(donation);
     }
 
     nav("home", { forceTop: true });
@@ -1833,6 +2663,227 @@
         ? "Spende offline gespeichert – noch nicht synchronisiert."
         : "Spende wurde erfasst."
     );
+  }
+
+  // Nur am Server gespeicherte Datensätze dürfen nachträglich geändert werden.
+  function editConnectionReady() {
+    if (!window.AVT_BACKEND?.isConfigured() || !backendReady || onlineState !== "online" ||
+        !C.demoMode && (!navigator.onLine || AVT_BACKEND.queueCount() > 0)) {
+      toast("Korrekturen sind nur online bei vollständig synchronisierten Daten möglich.");
+      return false;
+    }
+    if (C.event.editingAllowed !== true) {
+      toast(C.event.editClosureReason || "Diese Veranstaltung ist bereits abgeschlossen.");
+      return false;
+    }
+    return true;
+  }
+
+  function formatEditDate(value) {
+    if (!value) return "–";
+    const date = new Date(value);
+    return Number.isNaN(date.valueOf()) ? String(value) :
+      new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+  }
+
+  function openCheckinEdit(checkin, origin = "search") {
+    if (!editConnectionReady()) return;
+    if (!checkin.operationId || !checkin.updatedAt || checkin.offline) {
+      toast("Check-in noch nicht sicher am Server gespeichert. Bitte zuerst synchronisieren.");
+      return;
+    }
+    const originalCounts = checkin.counts || {};
+    activeEdit = {
+      type: "checkin", origin, original: U.clone(checkin),
+      counts: Object.fromEntries(Object.keys(categories).map(key => [key, Number(originalCounts[key] || 0)])),
+      tariff: checkin.tariff === "family" ? "family" : "regular",
+      paid: Number(checkin.paid || 0),
+      correctionReason: String(checkin.correctionReason || ""),
+      note: ""
+    };
+    nav("edit");
+  }
+
+  function openDonationEdit(donation) {
+    if (!editConnectionReady()) return;
+    if (!donation.operationId || !donation.updatedAt || donation.offline) {
+      toast("Spende noch nicht sicher am Server gespeichert. Bitte zuerst synchronisieren.");
+      return;
+    }
+    activeEdit = {
+      type: "donation", origin: "donation", original: U.clone(donation),
+      amount: Number(donation.amount || 0), note: ""
+    };
+    nav("edit");
+  }
+
+  function editRegularPrice() {
+    return Object.keys(categories).reduce((sum, key) =>
+      sum + Number(activeEdit.counts[key] || 0) * Number(C.prices[key] || 0), 0);
+  }
+
+  function editFamilyEligible() {
+    const c = activeEdit.counts;
+    return Number(c.adult || 0) >= Number(C.familyRule.minAdults || 1) &&
+      (Number(c.child || 0) + Number(c.youth || 0) + Number(c.student || 0)) >= Number(C.familyRule.minReducedPersons || 1) &&
+      (C.familyRule.requireRegularPriceAboveFamilyPrice === false || editRegularPrice() > Number(C.prices.family || 0));
+  }
+
+  function editBasePrice() {
+    return activeEdit.tariff === "family" && editFamilyEligible() ? Number(C.prices.family) : editRegularPrice();
+  }
+
+  function renderEditPanel() {
+    if (!activeEdit) { nav("home"); return; }
+    const state = activeEdit;
+    const currentIsCheckin = state.type === "checkin";
+    $("editHeading").textContent = currentIsCheckin ? "Check-in korrigieren" : "Spende korrigieren";
+    $("editContent").innerHTML = currentIsCheckin ? `
+      <div class="card"><h3>${U.esc(state.original.name || state.original.number)}</h3>
+        <p class="muted">${U.esc(state.original.number)} · ursprünglicher Check-in ${U.esc(formatEditDate(state.original.time))}</p>
+        <p>Aktuell: ${U.sumCounts(state.original.counts)} Personen · ${U.euro(state.original.paid)} Eintritt</p>
+      </div>
+      <div class="card"><h3>Tatsächliche Personenzahl</h3>
+        ${Object.keys(categories).map(key => `<div class="counter-row">
+          <span>${U.esc(categories[key].label)}</span>
+          <button type="button" data-edit-count="${key}" data-edit-delta="-1">−</button>
+          <div class="counter-value">${state.counts[key]}</div>
+          <button type="button" data-edit-count="${key}" data-edit-delta="1">+</button>
+        </div>`).join("")}
+        <p><strong>Gesamt: ${U.sumCounts(state.counts)} Personen</strong></p>
+      </div>
+      <div class="card"><h3>Eintritt und Tarif</h3>
+        <div class="tariff-row">
+          <button type="button" data-edit-tariff="regular" class="${state.tariff === "regular" ? "active-tariff" : ""}">Regulär ${U.euro(editRegularPrice())}</button>
+          <button type="button" data-edit-tariff="family" class="${state.tariff === "family" ? "active-tariff" : ""}" ${editFamilyEligible() ? "" : "disabled"}>Familie ${U.euro(C.prices.family)}</button>
+        </div>
+        <p>Berechneter Eintritt: <strong>${U.euro(editBasePrice())}</strong></p>
+        <label>Tatsächlich kassierter Eintritt (€)
+          <input id="editPaid" type="number" min="0" max="100000" step="0.01" inputmode="decimal" value="${U.esc(state.paid)}">
+        </label>
+        <label>Preis-Korrekturgrund (bei abweichendem Betrag)
+          <select id="editCorrectionReason"><option value="">Kein Grund</option>
+            ${correctionReasons.map(reason => `<option value="${U.esc(reason.id)}" ${state.correctionReason === reason.id ? "selected" : ""}>${U.esc(reason.label)}</option>`).join("")}
+          </select>
+        </label>
+      </div>` : `
+      <div class="card"><h3>Spende vom ${U.esc(formatEditDate(state.original.time))}</h3>
+        <p>Bisher gespeichert: <strong>${U.euro(state.original.amount)}</strong></p>
+        <label>Korrigierter Spendenbetrag (€)
+          <input id="editDonationAmount" type="number" min="0.01" max="100000" step="0.01" inputmode="decimal" value="${U.esc(state.amount)}">
+        </label>
+      </div>`;
+    $("editContent").insertAdjacentHTML("beforeend", `
+      <div class="card">
+        <label>Begründung der Änderung (Pflichtfeld)
+          <textarea id="editNote" rows="3" maxlength="500" placeholder="z. B. Familientarif versehentlich nicht ausgewählt"></textarea>
+        </label>
+        <button id="editSaveBtn" class="primary full" type="button">Korrektur prüfen und speichern</button>
+        <button id="editVoidBtn" class="secondary full" type="button">${currentIsCheckin ? "Check-in vollständig zurücknehmen" : "Spende stornieren"}</button>
+      </div>`);
+    $("editNote").value = state.note;
+    $("editContent").querySelectorAll("[data-edit-count]").forEach(button => {
+      button.onclick = () => {
+        captureEditValues();
+        const key = button.dataset.editCount;
+        const wasCalculated = Number(String(state.paid).replace(",", ".")) === editBasePrice();
+        state.counts[key] = Math.max(0, Math.min(150, Number(state.counts[key] || 0) + Number(button.dataset.editDelta)));
+        if (state.tariff === "family" && !editFamilyEligible()) state.tariff = "regular";
+        if (wasCalculated) state.paid = editBasePrice();
+        renderEditPanel();
+      };
+    });
+    $("editContent").querySelectorAll("[data-edit-tariff]").forEach(button => {
+      button.onclick = () => {
+        captureEditValues();
+        if (button.dataset.editTariff === "family" && !editFamilyEligible()) return;
+        state.tariff = button.dataset.editTariff;
+        // Beim Tarifwechsel berechneten Betrag übernehmen, falls vorher der reguläre Preis galt.
+        state.paid = editBasePrice();
+        state.correctionReason = "";
+        renderEditPanel();
+      };
+    });
+    $("editSaveBtn").onclick = () => saveEditedRecord(false);
+    $("editVoidBtn").onclick = () => saveEditedRecord(true);
+    $("editBackBtn").onclick = () => { const origin = activeEdit?.origin || "home"; activeEdit = null; nav(origin, { keepSearch: true, noFocus: true }); };
+  }
+
+  function captureEditValues() {
+    if (!activeEdit) return;
+    activeEdit.note = $("editNote")?.value || activeEdit.note || "";
+    if (activeEdit.type === "checkin") {
+      activeEdit.paid = $("editPaid")?.value ?? activeEdit.paid;
+      activeEdit.correctionReason = $("editCorrectionReason")?.value ?? activeEdit.correctionReason;
+    } else {
+      activeEdit.amount = $("editDonationAmount")?.value ?? activeEdit.amount;
+    }
+  }
+
+  async function saveEditedRecord(voided) {
+    if (!activeEdit || !editConnectionReady()) return;
+    captureEditValues();
+    const state = activeEdit;
+    const note = String(state.note || "").trim();
+    if (note.length < 3 || note.length > 500) { toast("Bitte einen Korrekturgrund mit mindestens 3 Zeichen angeben."); return; }
+    const centsValid = value => /^\d+(?:[.,]\d{1,2})?$/.test(String(value).trim()) && Number(String(value).replace(",", ".")) <= 100000;
+    if (!voided && state.type === "checkin") {
+      if (U.sumCounts(state.counts) < 1 || U.sumCounts(state.counts) > 150 || !Object.values(state.counts).every(n => Number.isInteger(n) && n >= 0)) {
+        toast("Bitte gültige Personenzahlen eingeben."); return;
+      }
+      if (!centsValid(state.paid)) { toast("Bitte einen gültigen Eintrittsbetrag eingeben."); return; }
+      if (Number(String(state.paid).replace(",", ".")) !== editBasePrice() && !state.correctionReason) {
+        toast("Bei abweichendem Eintritt bitte einen Preis-Korrekturgrund auswählen."); return;
+      }
+    }
+    if (!voided && state.type === "donation" && (!centsValid(state.amount) || Number(String(state.amount).replace(",", ".")) <= 0)) {
+      toast("Bitte einen gültigen Spendenbetrag größer null eingeben."); return;
+    }
+    const checkin = state.type === "checkin";
+    const before = checkin ? `${U.sumCounts(state.original.counts)} Personen, ${U.euro(state.original.paid)}` : U.euro(state.original.amount);
+    const after = voided ? "vollständig storniert" : checkin ? `${U.sumCounts(state.counts)} Personen, ${U.euro(state.paid)}, Tarif ${state.tariff}` : U.euro(state.amount);
+    if (!(await confirmBox(voided ? "Stornierung bestätigen" : "Korrektur bestätigen",
+      `Bisher: ${before}\nNeu: ${after}\nBegründung: ${note}\n\nNur die lokalen DEMO-Summen werden geändert.`,
+      voided ? "Stornieren" : "Änderung speichern"))) return;
+    if (!editConnectionReady()) return;
+
+    const edit = {
+      targetOperationId: state.original.operationId,
+      expectedUpdatedAt: state.original.updatedAt,
+      reason: note, voided
+    };
+    if (checkin) {
+      Object.assign(edit, { token: state.original.token, counts: state.counts, tariff: state.tariff,
+        paid: Number(String(state.paid).replace(",", ".")), correctionReason: state.correctionReason });
+    } else {
+      edit.amount = Number(String(state.amount).replace(",", "."));
+    }
+    const action = checkin ? "editCheckin" : "editDonation";
+    const operation = AVT_BACKEND.prepareOperation(action, { edit });
+    const button = $("editSaveBtn");
+    button.disabled = true;
+    $("editVoidBtn").disabled = true;
+    try {
+      // Korrekturen nie offline zwischenspeichern oder in die Offlinewarteschlange stellen.
+      await AVT_BACKEND.sendPrepared(operation);
+      const returnTo = state.origin;
+      activeEdit = null;
+      await refreshSharedState({ quiet: true, reason: "edit" });
+      nav(returnTo, { keepSearch: true, noFocus: true });
+      toast(voided ? "Stornierung gespeichert." : "Korrektur gespeichert.");
+    } catch (error) {
+      if (AVT_BACKEND.isAuthError(error)) { handleAuthenticationFailure(error.message); return; }
+      // Falls die Antwort verloren ging, neuen Serverstand laden, niemals automatisch neu senden.
+      toast(error.message || "Korrektur nicht bestätigt. Bitte aktualisieren.");
+      await refreshSharedState({ quiet: true, reason: "edit-error" });
+      if (error.code === "EDIT_CONFLICT" || error.code === "EVENT_CLOSED") {
+        activeEdit = null;
+        nav(state.origin, { keepSearch: true, noFocus: true });
+      }
+    } finally {
+      if ($("editSaveBtn")) $("editSaveBtn").disabled = false;
+      if ($("editVoidBtn")) $("editVoidBtn").disabled = false;
+    }
   }
 
   function renderOverview() {
@@ -1856,27 +2907,17 @@
       <div class="card">
         <h3>Erfasste Check-ins</h3>
         ${checkins.length
-          ? checkins.map(item => `<p><strong>${U.esc(item.number)}</strong> · ${U.sumCounts(item.counts)} Personen · ${U.euro(item.paid)}</p>`).join("")
+          ? checkins.map(item => `<button type="button" class="edit-list-item" data-overview-token="${U.esc(item.token)}"><span><strong>${U.esc(item.number)}</strong><small>${U.sumCounts(item.counts)} Personen · ${U.euro(item.paid)}</small></span><span>Bearbeiten ›</span></button>`).join("")
           : '<p class="muted">Noch keine Check-ins.</p>'}
       </div>`;
+    $("overviewContent").querySelectorAll("[data-overview-token]").forEach(button => {
+      button.onclick = () => {
+        const item = [...Object.values(data.checkins), ...data.manual].find(i => i.token === button.dataset.overviewToken);
+        if (item) openCheckinEdit(item, "overview");
+      };
+    });
   }
 
-  async function reset() {
-    if (await confirmBox("Testdaten zurücksetzen", "Alle lokalen Check-ins, Einnahmen und Spenden löschen?", "Zurücksetzen")) {
-      if (window.AVT_BACKEND?.isConfigured() && onlineState !== "offline") {
-        const snapshot = await AVT_BACKEND.resetServer();
-        applySnapshot(snapshot);
-      } else {
-        data = S.reset();
-      }
-      current = null;
-      counts = null;
-      resetPriceState();
-      renderAll();
-      renderSearch();
-      toast("Testdaten zurückgesetzt.");
-    }
-  }
 
   function showMessage(title, text, tone, withOverview = false) {
     panels.forEach(panel => $(panel).classList.add("hidden"));
@@ -1890,16 +2931,23 @@
     });
   }
 
-  function confirmBox(title, body, confirmText) {
+  function confirmBox(title, body, confirmText, tone = "") {
+    const modalCard = $("modal").querySelector(".modal");
+
     $("modalTitle").textContent = title;
     $("modalBody").textContent = body;
     $("modalConfirm").textContent = confirmText;
+
+    modalCard.classList.remove("capacity-warning", "capacity-danger");
+    if (tone) modalCard.classList.add(tone);
+
     $("modal").classList.remove("hidden");
     return new Promise(resolve => { modalResolve = resolve; });
   }
 
   function closeModal(value) {
     $("modal").classList.add("hidden");
+    $("modal").querySelector(".modal")?.classList.remove("capacity-warning", "capacity-danger");
     $("modalCancel").classList.remove("hidden");
     if (modalResolve) modalResolve(value);
     modalResolve = null;

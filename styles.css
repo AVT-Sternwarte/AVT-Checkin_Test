@@ -526,3 +526,279 @@ body.force-top-reset{
 #operationNotice > .offline-synced-indicator{
   margin:0 0 10px;
 }
+
+
+/* Produktivkorrekturen 1.0.0-rc.6 */
+.head-actions{
+  flex:0 0 auto;
+  gap:6px;
+}
+.head-btn{
+  width:44px;
+  height:44px;
+  border-radius:12px;
+}
+.head-btn img{
+  width:23px;
+  height:23px;
+}
+.head-btn svg{
+  width:25px;
+  height:25px;
+}
+@media(max-width:430px){
+  .topbar{
+    padding:8px max(8px,env(safe-area-inset-left)) 8px max(8px,env(safe-area-inset-right));
+    gap:7px;
+  }
+  .brand{
+    gap:8px;
+    min-width:0;
+  }
+  .brand img{
+    width:42px;
+    height:42px;
+    flex:0 0 auto;
+  }
+  .brand strong{
+    display:block;
+    font-size:.93rem;
+    white-space:nowrap;
+  }
+  .brand small{
+    font-size:.66rem;
+    white-space:nowrap;
+  }
+  .head-actions{
+    gap:4px;
+  }
+  .head-btn{
+    width:40px;
+    height:40px;
+    border-radius:11px;
+  }
+  .head-btn img{
+    width:21px;
+    height:21px;
+  }
+  .head-btn svg{
+    width:23px;
+    height:23px;
+  }
+}
+@media(max-width:350px){
+  .brand strong{font-size:.86rem}
+  .brand small{font-size:.61rem}
+  .brand img{width:38px;height:38px}
+  .head-btn{width:38px;height:38px}
+  .head-actions{gap:3px}
+}
+
+
+/* Produktivkorrekturen 1.0.0-rc.6 */
+.registration-blocked-card{
+  border:2px solid #d7a928;
+  background:#fff8df;
+}
+.registration-blocked-card h2{
+  margin-top:0;
+  color:#6b4d00;
+}
+.registration-blocked-details{
+  margin-top:14px;
+}
+.registration-blocked-hint{
+  margin-bottom:0;
+  padding-top:8px;
+  border-top:1px solid #d7a92866;
+}
+
+
+/* Produktivkorrekturen 1.0.0-rc.6 */
+.compact-safe-capacity{
+  display:flex;
+  align-items:baseline;
+  flex-wrap:nowrap;
+  white-space:nowrap;
+}
+.compact-event-card.capacity-at-limit{
+  background:#fff3d8;
+  border-color:#e0ad42;
+}
+.compact-event-card.capacity-over-limit{
+  background:#fde5e6;
+  border-color:#c9464f;
+  color:#8d151d;
+}
+.compact-event-card.capacity-over-limit .event-info-svg{
+  stroke:#8d151d;
+}
+.compact-event-card.capacity-over-limit .event-info-fill{
+  fill:#8d151d;
+}
+.modal.capacity-warning{
+  border:3px solid #e0ad42;
+  background:#fff8df;
+}
+.modal.capacity-danger{
+  border:3px solid #c9464f;
+  background:#fde5e6;
+}
+.modal.capacity-danger h2{
+  color:#8d151d;
+}
+.backend-status{
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+@media(max-width:370px){
+  .compact-capacity{font-size:.91rem}
+  .compact-safe-capacity{font-size:.79rem;letter-spacing:-.01em}
+  .event-info-btn{width:38px;height:38px}
+  .event-info-svg{width:30px;height:30px}
+  .compact-event-card{gap:6px;padding:8px 9px}
+  .backend-status{font-size:.75rem;padding:7px 9px}
+}
+
+
+/* Produktivkorrekturen 1.0.0-rc.6 */
+.compact-capacity{
+  white-space:nowrap;
+}
+.compact-safe-capacity{
+  gap:4px;
+}
+.waitlist-top-separator{
+  flex:0 0 auto;
+}
+.summary-card{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  min-height:96px;
+}
+.summary-card > small:first-child{
+  line-height:1.15;
+}
+.summary-card strong{
+  display:block;
+  line-height:1.12;
+  white-space:nowrap;
+}
+.registration-entry-disabled{
+  opacity:.78;
+  cursor:default;
+}
+.split-all-open-button{
+  margin-top:12px;
+}
+@media(max-width:430px){
+  .compact-event-card{
+    padding:8px 8px;
+    gap:5px;
+  }
+  .compact-capacity{
+    font-size:.86rem;
+    letter-spacing:-.018em;
+    line-height:1.15;
+  }
+  .compact-safe-capacity{
+    font-size:.74rem;
+    letter-spacing:-.018em;
+    gap:3px;
+  }
+  .event-info-btn{
+    width:34px;
+    height:34px;
+    border-radius:9px;
+  }
+  .event-info-svg{
+    width:27px;
+    height:27px;
+  }
+  .summary-card{
+    min-height:88px;
+    padding:10px;
+  }
+  .summary-card strong{
+    font-size:1.24rem;
+  }
+  .summary-card small{
+    font-size:.82rem;
+  }
+}
+@media(max-width:350px){
+  .compact-capacity{
+    font-size:.79rem;
+  }
+  .compact-safe-capacity{
+    font-size:.69rem;
+    gap:2px;
+  }
+  .event-info-btn{
+    width:31px;
+    height:31px;
+  }
+  .event-info-svg{
+    width:24px;
+    height:24px;
+  }
+}
+
+
+/* Produktivkorrektur 1.0.0-rc.6:
+   Die vier Haupt-Infofelder bestehen nur noch aus Überschrift und Wert
+   und erhalten deshalb eine deutlich geringere Höhe. */
+.summary{
+  gap:10px;
+}
+.summary-card{
+  min-height:72px;
+  padding:9px 12px;
+  justify-content:center;
+}
+.summary-card > small:first-child{
+  margin-bottom:3px;
+}
+.summary-card strong{
+  line-height:1.05;
+}
+@media(max-width:430px){
+  .summary{
+    gap:9px;
+  }
+  .summary-card{
+    min-height:70px;
+    padding:8px 10px;
+  }
+}
+@media(max-width:350px){
+  .summary-card{
+    min-height:66px;
+    padding:7px 9px;
+  }
+}
+
+/* Nachträgliche Korrekturen – 1.0.0-test.7 */
+.test-label {font-size:.7em; color:#533500; background:#fbc95e; padding:2px 5px; border-radius:6px; vertical-align:middle}
+.edit-list {margin-top:12px;display:flex; flex-direction:column; gap:8px}
+.edit-list-item {display:flex; justify-content:space-between; gap:12px; align-items:center; width:100%;padding:14px 12px; border:1px solid #b9c6ce; border-radius:12px; background:#fff; color:#162e3c; text-align:left; cursor:pointer}
+.edit-list-item span {display:flex; flex-direction:column; gap:4px}
+.edit-list-item small {color:#657481; font-size:.86rem}
+.edit-list-item:disabled {cursor:default; opacity:.65}
+#editPanel .card {margin-bottom:14px}
+#editPanel label {display:block; margin:12px 0}
+#editPanel textarea {display:block;box-sizing:border-box; width:100%;padding:12px;min-height:85px;font:inherit;border:1px solid #bac4ca;border-radius:9px}
+#editPanel .counter-row {grid-template-columns:minmax(100px,1fr) 44px 40px 44px}
+#editPanel .full + .full {margin-top:10px}
+
+#modalBody {white-space:pre-line}
+
+/* Zusätzliche Demo-Steuerung – nicht Bestandteil der Produktiv-App */
+.demo-toolbar{background:#fff7df;border:1px solid #e2ba4f;color:#654500;border-radius:10px;padding:10px 12px;margin:8px 0 14px;font-size:.88rem;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px}
+.demo-toolbar>span{font-weight:700}
+.demo-buttons{display:flex;flex-wrap:wrap;gap:8px}
+.demo-buttons button{padding:8px 12px;min-height:36px;font-size:.85rem}
+.demo-toolbar.closed{border-color:#c47070;background:#fff0f0;color:#852727}
+@media(max-width:480px){.demo-toolbar{display:block}.demo-buttons{margin-top:8px}.demo-buttons button{flex:1}}
